@@ -55,6 +55,8 @@ func StripThinkingConfig(body []byte, provider string) []byte {
 		}
 	case "codex", "xai":
 		paths = []string{"reasoning"}
+	case "zai":
+		paths = []string{"thinking", "enable_thinking", "reasoning_effort", "chat_template_kwargs"}
 	default:
 		return body
 	}

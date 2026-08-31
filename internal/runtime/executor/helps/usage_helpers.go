@@ -710,10 +710,13 @@ func hasOpenAIStyleUsageBucketFields(usageNode gjson.Result) bool {
 		usageNode.Get("output_tokens").Exists() ||
 		usageNode.Get("prompt_tokens_details.cached_tokens").Exists() ||
 		usageNode.Get("input_tokens_details.cached_tokens").Exists() ||
+		usageNode.Get("prompt_cache_hit_tokens").Exists() ||
+		usageNode.Get("cache_read_tokens").Exists() ||
 		usageNode.Get("prompt_tokens_details.cache_write_tokens").Exists() ||
 		usageNode.Get("prompt_tokens_details.cache_creation_tokens").Exists() ||
 		usageNode.Get("input_tokens_details.cache_write_tokens").Exists() ||
 		usageNode.Get("input_tokens_details.cache_creation_tokens").Exists() ||
+		usageNode.Get("cache_write_tokens").Exists() ||
 		usageNode.Get("completion_tokens_details.reasoning_tokens").Exists() ||
 		usageNode.Get("output_tokens_details.reasoning_tokens").Exists()
 }
@@ -736,6 +739,12 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if !cached.Exists() {
 		cached = usageNode.Get("input_tokens_details.cached_tokens")
 	}
+	if !cached.Exists() {
+		cached = usageNode.Get("prompt_cache_hit_tokens")
+	}
+	if !cached.Exists() {
+		cached = usageNode.Get("cache_read_tokens")
+	}
 	if cached.Exists() {
 		detail.CachedTokens = cached.Int()
 		detail.CacheReadTokens = cached.Int()
@@ -746,6 +755,8 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 		"input_tokens_details.cache_write_tokens",
 		"prompt_tokens_details.cache_creation_tokens",
 		"prompt_tokens_details.cache_write_tokens",
+		"cache_write_tokens",
+		"cache_write_input_tokens",
 	)
 	if cacheCreation.Exists() {
 		detail.CacheCreationTokens = cacheCreation.Int()
