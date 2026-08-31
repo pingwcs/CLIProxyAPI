@@ -2485,3 +2485,51 @@ func TestManagerSetSelectorConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestRoundRobinSelectorPick_ExcludesDisabledAuth(t *testing.T) {
+	t.Parallel()
+
+	selector := &RoundRobinSelector{}
+	active := &Auth{ID: "auth-active", Status: StatusActive, Disabled: false}
+	disabled := &Auth{ID: "auth-disabled", Status: StatusDisabled, Disabled: true}
+
+	for i := 0; i < 5; i++ {
+		got, err := selector.Pick(context.Background(), "zai", "", cliproxyexecutor.Options{}, []*Auth{active, disabled})
+		if err != nil {
+			t.Fatalf("Pick() error = %v", err)
+		}
+		if got == nil || got.ID != "auth-active" {
+			t.Fatalf("Pick() selected %v, want auth-active", got)
+		}
+	}
+
+	// When all auths are disabled, Pick must fail
+	_, errAllDisabled := selector.Pick(context.Background(), "zai", "", cliproxyexecutor.Options{}, []*Auth{disabled})
+	if errAllDisabled == nil {
+		t.Fatalf("Pick() with only disabled auths succeeded, want error")
+	}
+}
+
+func TestWeightedRoundRobinSelectorPick_ExcludesDisabledAuth(t *testing.T) {
+	t.Parallel()
+
+	selector := &WeightedRoundRobinSelector{}
+	active := &Auth{ID: "auth-active", Status: StatusActive, Disabled: false}
+	disabled := &Auth{ID: "auth-disabled", Status: StatusDisabled, Disabled: true}
+
+	for i := 0; i < 5; i++ {
+		got, err := selector.Pick(context.Background(), "zai", "", cliproxyexecutor.Options{}, []*Auth{active, disabled})
+		if err != nil {
+			t.Fatalf("Pick() error = %v", err)
+		}
+		if got == nil || got.ID != "auth-active" {
+			t.Fatalf("Pick() selected %v, want auth-active", got)
+		}
+	}
+
+	// When all auths are disabled, Pick must fail
+	_, errAllDisabled := selector.Pick(context.Background(), "zai", "", cliproxyexecutor.Options{}, []*Auth{disabled})
+	if errAllDisabled == nil {
+		t.Fatalf("Pick() with only disabled auths succeeded, want error")
+	}
+}

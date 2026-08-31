@@ -396,20 +396,8 @@ func (h *Handler) findAuthForDelete(name string) *coreauth.Auth {
 	if name == "" {
 		return nil
 	}
-	if auth, ok := h.authManager.GetByID(name); ok {
+	if auth, ok := h.lookupAuthFile(name, ""); ok && auth != nil {
 		return auth
-	}
-	auths := h.authManager.List()
-	for _, auth := range auths {
-		if auth == nil {
-			continue
-		}
-		if strings.TrimSpace(auth.FileName) == name {
-			return auth
-		}
-		if filepath.Base(strings.TrimSpace(authAttribute(auth, "path"))) == name {
-			return auth
-		}
 	}
 	return nil
 }

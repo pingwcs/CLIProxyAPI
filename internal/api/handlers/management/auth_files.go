@@ -125,11 +125,59 @@ func lockedAuthIndex(auth *coreauth.Auth) string {
 	return strings.TrimSpace(auth.EnsureIndex())
 }
 
+func matchAuthName(auth *coreauth.Auth, name string) bool {
+	if auth == nil || name == "" {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	id := strings.TrimSpace(auth.ID)
+	fileName := strings.TrimSpace(auth.FileName)
+	path := strings.TrimSpace(authAttribute(auth, "path"))
+	source := strings.TrimSpace(authAttribute(auth, coreauth.AttributeSource))
+	virtualSource := strings.TrimSpace(authAttribute(auth, coreauth.AttributeVirtualSource))
+
+	// Exact matches
+	if id == name || fileName == name {
+		return true
+	}
+	if filepath.Base(id) == name || filepath.Base(fileName) == name {
+		return true
+	}
+	if path != "" && (path == name || filepath.Base(path) == name) {
+		return true
+	}
+	if source != "" && (source == name || filepath.Base(source) == name) {
+		return true
+	}
+	if virtualSource != "" && (virtualSource == name || filepath.Base(virtualSource) == name) {
+		return true
+	}
+
+	// Case-insensitive matches (for Windows and tolerant matching)
+	if strings.EqualFold(id, name) || strings.EqualFold(fileName, name) {
+		return true
+	}
+	if strings.EqualFold(filepath.Base(id), name) || strings.EqualFold(filepath.Base(fileName), name) {
+		return true
+	}
+	if path != "" && (strings.EqualFold(path, name) || strings.EqualFold(filepath.Base(path), name)) {
+		return true
+	}
+	if source != "" && (strings.EqualFold(source, name) || strings.EqualFold(filepath.Base(source), name)) {
+		return true
+	}
+	if virtualSource != "" && (strings.EqualFold(virtualSource, name) || strings.EqualFold(filepath.Base(virtualSource), name)) {
+		return true
+	}
+
+	return false
+}
+
 func matchesAuthFileLookup(auth *coreauth.Auth, name string, authIndex string) bool {
 	if auth == nil {
 		return false
 	}
-	if name != "" && strings.TrimSpace(auth.ID) != name && strings.TrimSpace(auth.FileName) != name {
+	if name != "" && !matchAuthName(auth, name) {
 		return false
 	}
 	if authIndex != "" && lockedAuthIndex(auth) != authIndex {
@@ -145,12 +193,17 @@ func (h *Handler) lookupAuthFile(name string, authIndex string) (*coreauth.Auth,
 		return nil, false
 	}
 	if authIndex == "" {
-		if auth, ok := h.authManager.GetByID(name); ok {
+		if auth, ok := h.authManager.GetByID(name); ok && auth != nil {
 			return auth, true
 		}
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if auth != nil && strings.TrimSpace(auth.FileName) == name {
+			if auth != nil && (strings.TrimSpace(auth.ID) == name || strings.TrimSpace(auth.FileName) == name) {
+				return auth, true
+			}
+		}
+		for _, auth := range auths {
+			if matchAuthName(auth, name) {
 				return auth, true
 			}
 		}
@@ -176,12 +229,8 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	// Try to find auth ID via authManager
 	var authID string
 	if h.authManager != nil {
-		auths := h.authManager.List()
-		for _, auth := range auths {
-			if auth.FileName == name || auth.ID == name {
-				authID = auth.ID
-				break
-			}
+		if auth, ok := h.lookupAuthFile(name, ""); ok && auth != nil {
+			authID = auth.ID
 		}
 	}
 
