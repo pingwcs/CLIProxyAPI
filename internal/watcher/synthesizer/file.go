@@ -185,6 +185,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	a := &coreauth.Auth{
 		ID:       id,
 		Provider: provider,
+		FileName: filepath.Base(fullPath),
 		Label:    label,
 		Prefix:   prefix,
 		Status:   status,

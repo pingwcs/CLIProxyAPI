@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -32,6 +33,8 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		Name      string `json:"name"`
 		AuthIndex string `json:"auth_index"`
 		Disabled  *bool  `json:"disabled"`
+		Enabled   *bool  `json:"enabled"`
+		Status    string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -43,6 +46,21 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	if name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
+	}
+	if req.Disabled == nil {
+		if req.Enabled != nil {
+			disabled := !*req.Enabled
+			req.Disabled = &disabled
+		} else if req.Status != "" {
+			st := strings.ToLower(strings.TrimSpace(req.Status))
+			if st == "disabled" {
+				disabled := true
+				req.Disabled = &disabled
+			} else if st == "active" || st == "enabled" {
+				disabled := false
+				req.Disabled = &disabled
+			}
+		}
 	}
 	if req.Disabled == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "disabled is required"})
@@ -111,6 +129,12 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
 	}
+	if *req.Disabled {
+		registry.GetGlobalRegistry().UnregisterClient(targetAuth.ID)
+	}
+	if h.postAuthPersistHook != nil {
+		_ = h.postAuthPersistHook(ctx, targetAuth)
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
@@ -147,6 +171,12 @@ func (h *Handler) patchPluginVirtualSourceStatus(ctx context.Context, targetAuth
 		auth.UpdatedAt = now
 		if _, errUpdate := h.authManager.Update(ctx, auth); errUpdate != nil {
 			return fmt.Errorf("failed to update auth %s: %w", auth.ID, errUpdate)
+		}
+		if disabled {
+			registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+		}
+		if h.postAuthPersistHook != nil {
+			_ = h.postAuthPersistHook(ctx, auth)
 		}
 	}
 	return nil
@@ -252,18 +282,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Find auth by name or ID
-	var targetAuth *coreauth.Auth
-	if auth, ok := h.authManager.GetByID(name); ok {
-		targetAuth = auth
-	} else {
-		auths := h.authManager.List()
-		for _, auth := range auths {
-			if auth.FileName == name {
-				targetAuth = auth
-				break
-			}
-		}
-	}
+	targetAuth, _ := h.lookupAuthFile(name, "")
 
 	if targetAuth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
@@ -346,6 +365,12 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
+	}
+	if targetAuth.Disabled {
+		registry.GetGlobalRegistry().UnregisterClient(targetAuth.ID)
+	}
+	if h.postAuthPersistHook != nil {
+		_ = h.postAuthPersistHook(ctx, targetAuth)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

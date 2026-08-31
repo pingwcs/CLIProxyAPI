@@ -830,3 +830,34 @@ func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestSynthesizeAuthFileStandardDisabledAndFileName(t *testing.T) {
+	tempDir := t.TempDir()
+	fullPath := filepath.Join(tempDir, "zai_auth.json")
+	raw := []byte(`{"type":"zai","token":"test","disabled":true}`)
+
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, errSynthesize := SynthesizeAuthFile(ctx, fullPath, raw)
+	if errSynthesize != nil {
+		t.Fatalf("SynthesizeAuthFile() error = %v", errSynthesize)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("SynthesizeAuthFile() len = %d, want 1", len(auths))
+	}
+	auth := auths[0]
+	if !auth.Disabled {
+		t.Fatalf("auth.Disabled = false, want true")
+	}
+	if auth.Status != coreauth.StatusDisabled {
+		t.Fatalf("auth.Status = %s, want %s", auth.Status, coreauth.StatusDisabled)
+	}
+	if auth.FileName != "zai_auth.json" {
+		t.Fatalf("auth.FileName = %q, want 'zai_auth.json'", auth.FileName)
+	}
+}
