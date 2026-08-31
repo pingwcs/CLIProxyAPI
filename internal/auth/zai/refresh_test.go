@@ -189,3 +189,74 @@ func TestIsJWT(t *testing.T) {
 		t.Errorf("expected false for %s", invalid)
 	}
 }
+
+func TestStripBearerScheme(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"   ", ""},
+		{"raw-jwt-token", "raw-jwt-token"},
+		{"Bearer raw-jwt-token", "raw-jwt-token"},
+		{"bearer raw-jwt-token", "raw-jwt-token"},
+		{"BEARER   raw-jwt-token  ", "raw-jwt-token"},
+		{"Bearer Bearer token", "Bearer token"},
+	}
+
+	for _, tt := range tests {
+		got := StripBearerScheme(tt.input)
+		if got != tt.want {
+			t.Errorf("StripBearerScheme(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRefreshAccess_BearerPrefixStripping(t *testing.T) {
+	expectedDeviceID := "test-device-456"
+	rawRefreshToken := "my-raw-refresh-token"
+	inputPrefixedRefreshToken := "Bearer " + rawRefreshToken
+	mockServerAccess := "Bearer new-raw-access-token"
+	mockServerRefresh := "bearer new-raw-refresh-token"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read body: %v", err)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			t.Fatalf("failed to parse json body: %v", err)
+		}
+
+		if payload["refresh_token"] != rawRefreshToken {
+			t.Errorf("expected refresh_token in request body to be stripped %q, got %q", rawRefreshToken, payload["refresh_token"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"msg":  "",
+			"data": map[string]any{
+				"access_token":  mockServerAccess,
+				"refresh_token": mockServerRefresh,
+				"user_id":       9999,
+				"user_name":     "prefixed_user",
+			},
+		})
+	}))
+	defer ts.Close()
+
+	ctx := context.Background()
+	refreshed, err := RefreshAccess(ctx, ts.Client(), ts.URL+"/userapi/v1/refresh", expectedDeviceID, inputPrefixedRefreshToken, "")
+	if err != nil {
+		t.Fatalf("RefreshAccess failed: %v", err)
+	}
+
+	if refreshed.AccessToken != "new-raw-access-token" {
+		t.Errorf("expected AccessToken 'new-raw-access-token', got %q", refreshed.AccessToken)
+	}
+	if refreshed.RefreshToken != "new-raw-refresh-token" {
+		t.Errorf("expected RefreshToken 'new-raw-refresh-token', got %q", refreshed.RefreshToken)
+	}
+}

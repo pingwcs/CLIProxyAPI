@@ -108,7 +108,7 @@ func (e *ZAIExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, 
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewZAIHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
 }
 
@@ -189,7 +189,7 @@ func (e *ZAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 			AuthValue: authValue,
 		})
 
-		httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+		httpClient := helps.NewZAIHTTPClient(ctx, e.cfg, auth, 0)
 		httpClient = reporter.TrackHTTPClient(httpClient)
 
 		respCandidate, errDo := httpClient.Do(httpReq)
@@ -333,7 +333,7 @@ func (e *ZAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			AuthValue: authValue,
 		})
 
-		httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+		httpClient := helps.NewZAIHTTPClient(ctx, e.cfg, auth, 0)
 		httpClient = reporter.TrackHTTPClient(httpClient)
 
 		respCandidate, errDo := httpClient.Do(httpReq)
@@ -443,7 +443,7 @@ func (e *ZAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 
 	tokenEndpoint := zaiTokenEndpoint(auth)
 	deviceID := zaiDeviceID(auth)
-	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewZAIHTTPClient(ctx, e.cfg, auth, 0)
 	refreshedData, err := zaiauth.RefreshAccess(ctx, httpClient, tokenEndpoint, deviceID, refreshToken, auth.ProxyURL)
 	if err != nil {
 		return nil, err
@@ -502,15 +502,15 @@ func zaiCreds(a *cliproxyauth.Auth) string {
 	}
 	if a.Metadata != nil {
 		if v, ok := a.Metadata["access_token"].(string); ok && strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
+			return zaiauth.StripBearerScheme(v)
 		}
 	}
 	if a.Attributes != nil {
 		if v := strings.TrimSpace(a.Attributes["access_token"]); v != "" {
-			return v
+			return zaiauth.StripBearerScheme(v)
 		}
 		if v := strings.TrimSpace(a.Attributes["api_key"]); v != "" {
-			return v
+			return zaiauth.StripBearerScheme(v)
 		}
 	}
 	return ""
@@ -576,6 +576,9 @@ func applyZAIHeaders(r *http.Request, token, routeModel string, stream bool) {
 	r.Header.Del("Authorization")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Accept", "*/*")
+	if r.Header.Get("User-Agent") == "" {
+		r.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
+	}
 	if token != "" {
 		r.Header.Set("X-Authorization", "Bearer "+token)
 	}

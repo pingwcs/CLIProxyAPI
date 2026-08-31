@@ -467,6 +467,37 @@ func TestNewUtlsHTTPClientUsesContextRoundTripperForProtectedHost(t *testing.T) 
 	}
 }
 
+func TestNewZAIHTTPClientUsesContextRoundTripper(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", utlsClientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("{}")),
+			Request:    req,
+		}, nil
+	}))
+
+	client := NewZAIHTTPClient(ctx, nil, nil, 5*time.Second)
+	if client.Timeout != 5*time.Second {
+		t.Errorf("client.Timeout = %v, want 5s", client.Timeout)
+	}
+
+	resp, err := client.Get("https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw/chat/completions")
+	if err != nil {
+		t.Fatalf("client.Get returned error: %v", err)
+	}
+	if errClose := resp.Body.Close(); errClose != nil {
+		t.Fatalf("response body close returned error: %v", errClose)
+	}
+	if !called {
+		t.Fatal("expected context RoundTripper to handle zai request")
+	}
+}
+
 type claudeCodeClientHelloSummary struct {
 	CipherSuites        []uint16
 	ExtensionTypes      []uint16

@@ -405,3 +405,36 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 	}
 	return client
 }
+
+// NewZAIHTTPClient creates an HTTP client that always uses the Chrome uTLS
+// fingerprint transport. The AutoClaw (z.ai) upstream sits behind an Aliyun
+// WAF that blocks the default Go TLS fingerprint, so every zai request must
+// dial with a browser-like ClientHello.
+// timeout follows the caller's usual semantics; 0 means no client-level timeout.
+func NewZAIHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+	var proxyURL string
+	if auth != nil {
+		proxyURL = strings.TrimSpace(auth.ProxyURL)
+	}
+	if proxyURL == "" && cfg != nil {
+		proxyURL = strings.TrimSpace(cfg.ProxyURL)
+	}
+
+	var ctxRoundTripper http.RoundTripper
+	if ctx != nil {
+		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
+	}
+
+	var rt http.RoundTripper = newUtlsRoundTripper(proxyURL)
+	if proxyURL == "" && ctxRoundTripper != nil {
+		rt = ctxRoundTripper
+	}
+
+	client := &http.Client{
+		Transport: rt,
+	}
+	if timeout > 0 {
+		client.Timeout = timeout
+	}
+	return client
+}

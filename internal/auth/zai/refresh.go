@@ -33,7 +33,15 @@ const (
 	DefaultBaseURL      = "https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw"
 )
 
-var jwtPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
+var (
+	jwtPattern          = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
+	bearerSchemePattern = regexp.MustCompile(`(?i)^bearer\s+`)
+)
+
+// StripBearerScheme removes an optional leading "Bearer " (case-insensitive) scheme prefix from a token value.
+func StripBearerScheme(token string) string {
+	return strings.TrimSpace(bearerSchemePattern.ReplaceAllString(strings.TrimSpace(token), ""))
+}
 
 // RefreshData holds the refreshed credentials returned by z.ai userapi.
 type RefreshData struct {
@@ -67,6 +75,7 @@ type refreshResponseData struct {
 // tokenEndpoint may be "" to use defaultUserAPIHost+defaultRefreshPath.
 // proxyURL is optional http(s) proxy (may be "").
 func RefreshAccess(ctx context.Context, client *http.Client, tokenEndpoint, deviceID, refreshToken, proxyURL string) (*RefreshData, error) {
+	refreshToken = StripBearerScheme(refreshToken)
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, fmt.Errorf("zai refresh: refresh_token is empty")
 	}
@@ -185,8 +194,8 @@ func doRefreshRequest(ctx context.Context, client *http.Client, targetURL, devic
 	}
 
 	return &RefreshData{
-		AccessToken:  resPayload.Data.AccessToken,
-		RefreshToken: resPayload.Data.RefreshToken,
+		AccessToken:  StripBearerScheme(resPayload.Data.AccessToken),
+		RefreshToken: StripBearerScheme(resPayload.Data.RefreshToken),
 		UserID:       userID,
 		UserName:     resPayload.Data.UserName,
 	}, resPayload.Code, resPayload.Msg, nil

@@ -76,6 +76,77 @@ func TestApplyZAIHeaders(t *testing.T) {
 	if req.Header.Get("X-Session-Id") == "" {
 		t.Errorf("missing X-Session-Id")
 	}
+	wantUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+	if got := req.Header.Get("User-Agent"); got != wantUA {
+		t.Errorf("User-Agent = %q, want %q", got, wantUA)
+	}
+
+	// Preserves custom User-Agent if already set
+	customReq, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
+	customReq.Header.Set("User-Agent", "CustomAgent/1.0")
+	applyZAIHeaders(customReq, "test-token", "zai_auto", false)
+	if got := customReq.Header.Get("User-Agent"); got != "CustomAgent/1.0" {
+		t.Errorf("User-Agent = %q, want 'CustomAgent/1.0'", got)
+	}
+}
+
+func TestZAICreds_BearerPrefixStripping(t *testing.T) {
+	tests := []struct {
+		name string
+		auth *cliproxyauth.Auth
+		want string
+	}{
+		{
+			name: "metadata access_token with Bearer",
+			auth: &cliproxyauth.Auth{
+				Metadata: map[string]any{
+					"access_token": "Bearer eyJhbGciOiJIUzI1NiJ9.metadata",
+				},
+			},
+			want: "eyJhbGciOiJIUzI1NiJ9.metadata",
+		},
+		{
+			name: "attributes access_token with lowercase bearer",
+			auth: &cliproxyauth.Auth{
+				Attributes: map[string]string{
+					"access_token": "bearer   eyJhbGciOiJIUzI1NiJ9.attr_access",
+				},
+			},
+			want: "eyJhbGciOiJIUzI1NiJ9.attr_access",
+		},
+		{
+			name: "attributes api_key with uppercase BEARER",
+			auth: &cliproxyauth.Auth{
+				Attributes: map[string]string{
+					"api_key": "BEARER eyJhbGciOiJIUzI1NiJ9.attr_apikey",
+				},
+			},
+			want: "eyJhbGciOiJIUzI1NiJ9.attr_apikey",
+		},
+		{
+			name: "metadata raw token without Bearer prefix",
+			auth: &cliproxyauth.Auth{
+				Metadata: map[string]any{
+					"access_token": "eyJhbGciOiJIUzI1NiJ9.raw",
+				},
+			},
+			want: "eyJhbGciOiJIUzI1NiJ9.raw",
+		},
+		{
+			name: "nil auth",
+			auth: nil,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := zaiCreds(tt.auth)
+			if got != tt.want {
+				t.Errorf("zaiCreds() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestZAIExecutor_Execute_SSEAggregation(t *testing.T) {
@@ -134,7 +205,8 @@ func TestZAIExecutor_Execute_SSEAggregation(t *testing.T) {
 		SourceFormat: sdktranslator.FormatOpenAI,
 	}
 
-	resp, err := exec.Execute(context.Background(), auth, req, opts)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", server.Client().Transport)
+	resp, err := exec.Execute(ctx, auth, req, opts)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -201,7 +273,8 @@ func TestZAIExecutor_HostFailover(t *testing.T) {
 	}
 
 	reqPayload := []byte(`{"model":"zai_auto","messages":[{"role":"user","content":"hi"}]}`)
-	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", secondaryServer.Client().Transport)
+	resp, err := exec.Execute(ctx, auth, cliproxyexecutor.Request{
 		Model:   "zai_auto",
 		Payload: reqPayload,
 	}, cliproxyexecutor.Options{
@@ -249,7 +322,8 @@ func TestZAIExecutor_Refresh(t *testing.T) {
 		},
 	}
 
-	refreshed, err := exec.Refresh(context.Background(), auth)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", refreshServer.Client().Transport)
+	refreshed, err := exec.Refresh(ctx, auth)
 	if err != nil {
 		t.Fatalf("Refresh failed: %v", err)
 	}
