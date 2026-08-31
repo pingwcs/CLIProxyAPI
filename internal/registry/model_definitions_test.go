@@ -111,3 +111,32 @@ func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing
 		t.Fatalf("unknown model should not get Antigravity web search model, got %q", got)
 	}
 }
+
+func TestGetZAIModels(t *testing.T) {
+	models := GetZAIModels()
+	if len(models) != 6 {
+		t.Fatalf("GetZAIModels() returned %d models, want 6", len(models))
+	}
+	autoFound := false
+	for _, m := range models {
+		if m != nil && m.ID == "zai_auto" {
+			autoFound = true
+			if m.OwnedBy != "autoclaw" || m.Type != "zai" {
+				t.Fatalf("zai_auto properties mismatch: owned_by=%s, type=%s", m.OwnedBy, m.Type)
+			}
+		}
+	}
+	if !autoFound {
+		t.Fatal("zai_auto not found in GetZAIModels()")
+	}
+
+	channelModels := GetStaticModelDefinitionsByChannel("zai")
+	if len(channelModels) != 6 {
+		t.Fatalf("GetStaticModelDefinitionsByChannel(zai) returned %d models, want 6", len(channelModels))
+	}
+
+	lookup := LookupStaticModelInfo("zai_auto")
+	if lookup == nil || lookup.ID != "zai_auto" {
+		t.Fatalf("LookupStaticModelInfo(zai_auto) = %v, want valid model", lookup)
+	}
+}

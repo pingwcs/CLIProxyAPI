@@ -27,4 +27,10 @@ const (
 
 	// Interactions represents the Google Interactions API format identifier.
 	Interactions = "interactions"
+
+	// ZAI represents the AutoClaw (z.ai) provider identifier.
+	ZAI = "zai"
+
+	// AutoClaw represents the AutoClaw alias provider identifier.
+	AutoClaw = "autoclaw"
 )

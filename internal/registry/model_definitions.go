@@ -112,6 +112,11 @@ func GetXAIModels() []*ModelInfo {
 	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
 }
 
+// GetZAIModels returns the standard AutoClaw (z.ai) model definitions.
+func GetZAIModels() []*ModelInfo {
+	return cloneModelInfos(zaiBuiltinModelInfos())
+}
+
 // WithCodexBuiltins injects hard-coded Codex-only model definitions that should
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
@@ -235,6 +240,71 @@ func xaiBuiltinVideo15PreviewModelInfo() *ModelInfo {
 	}
 }
 
+func zaiBuiltinModelInfos() []*ModelInfo {
+	return []*ModelInfo{
+		{
+			ID:            "zai_auto",
+			Object:        "model",
+			Created:       1786060800, // 2026-08-07
+			OwnedBy:       "autoclaw",
+			Type:          "zai",
+			DisplayName:   "Z.ai Auto",
+			Description:   "AutoClaw default auto model routing.",
+			ContextLength: 1000000,
+		},
+		{
+			ID:            "zaicoding_glm-5.3",
+			Object:        "model",
+			Created:       1786060800, // 2026-08-07
+			OwnedBy:       "autoclaw",
+			Type:          "zai",
+			DisplayName:   "Z.ai Coding GLM 5.3",
+			Description:   "AutoClaw GLM 5.3 coding model.",
+			ContextLength: 1000000,
+		},
+		{
+			ID:            "zai_glm-5-turbo",
+			Object:        "model",
+			Created:       1786060800, // 2026-08-07
+			OwnedBy:       "autoclaw",
+			Type:          "zai",
+			DisplayName:   "Z.ai GLM 5 Turbo",
+			Description:   "AutoClaw GLM 5 Turbo model.",
+			ContextLength: 1000000,
+		},
+		{
+			ID:            "tdpsk_deepseek-v4-flash-202605",
+			Object:        "model",
+			Created:       1786060800, // 2026-08-07
+			OwnedBy:       "autoclaw",
+			Type:          "zai",
+			DisplayName:   "DeepSeek V4 Flash",
+			Description:   "AutoClaw DeepSeek V4 Flash model.",
+			ContextLength: 1000000,
+		},
+		{
+			ID:            "tdpsk_deepseek-v4-pro-202606",
+			Object:        "model",
+			Created:       1786060800, // 2026-08-07
+			OwnedBy:       "autoclaw",
+			Type:          "zai",
+			DisplayName:   "DeepSeek V4 Pro",
+			Description:   "AutoClaw DeepSeek V4 Pro model.",
+			ContextLength: 1000000,
+		},
+		{
+			ID:            "zai_glm-5.3-flash",
+			Object:        "model",
+			Created:       1786060800, // 2026-08-07
+			OwnedBy:       "autoclaw",
+			Type:          "zai",
+			DisplayName:   "Z.ai GLM 5.3 Flash",
+			Description:   "AutoClaw GLM 5.3 Flash model.",
+			ContextLength: 1000000,
+		},
+	}
+}
+
 func upsertModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {
 	if len(extras) == 0 {
 		return models
@@ -306,6 +376,8 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - kimi
 //   - antigravity
 //   - xai
+//   - zai
+//   - autoclaw
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
@@ -327,6 +399,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAntigravityModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
+	case "zai", "autoclaw":
+		return GetZAIModels()
 	default:
 		return nil
 	}
@@ -349,6 +423,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Kimi,
 		data.Antigravity,
 		data.XAI,
+		GetZAIModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {
