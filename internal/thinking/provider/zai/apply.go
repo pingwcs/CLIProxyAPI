@@ -61,7 +61,7 @@ func isBigModelGLM52(modelID string) bool {
 	if idx := strings.LastIndex(m, "/"); idx >= 0 {
 		m = m[idx+1:]
 	}
-	return strings.HasSuffix(m, "glm-5.2") || strings.Contains(m, "glm-5.2")
+	return strings.Contains(m, "glm-5.2")
 }
 
 func isDisabled(config thinking.ThinkingConfig) bool {
@@ -105,6 +105,9 @@ func applyDisabledThinking(body []byte, isGlm52 bool) ([]byte, error) {
 	result, err = sjson.DeleteBytes(result, "chat_template_kwargs.enable_thinking")
 	if err != nil {
 		return body, fmt.Errorf("zai thinking: failed to delete chat_template_kwargs: %w", err)
+	}
+	if ctk := gjson.GetBytes(result, "chat_template_kwargs"); ctk.Exists() && ctk.IsObject() && len(ctk.Map()) == 0 {
+		result, _ = sjson.DeleteBytes(result, "chat_template_kwargs")
 	}
 	result, err = sjson.SetBytes(result, "thinking.type", "disabled")
 	if err != nil {
