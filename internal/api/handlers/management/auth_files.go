@@ -348,6 +348,18 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "zai") || strings.EqualFold(strings.TrimSpace(auth.Provider), "autoclaw") {
+		if hint, ok := coreauth.GetZaiCreditsHint(auth.ID); ok && hint.Known {
+			entry["credits"] = gin.H{
+				"known":         true,
+				"total_balance": hint.TotalBalance,
+				"wallets":       hint.Wallets,
+				"updated_at":    hint.UpdatedAt,
+			}
+		} else {
+			entry["credits"] = gin.H{"known": false}
+		}
+	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}
