@@ -249,6 +249,7 @@ func (e *ZAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		out = helps.EnsureResponsesUsageDetails(out)
 	}
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+	e.maybeRefreshZaiCredits(ctx, auth)
 	return resp, nil
 }
 
@@ -415,6 +416,7 @@ func (e *ZAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		}
 	}()
 
+	e.maybeRefreshZaiCredits(ctx, auth)
 	return &cliproxyexecutor.StreamResult{
 		Headers: httpResp.Header.Clone(),
 		Chunks:  out,
