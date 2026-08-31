@@ -27,6 +27,7 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"antigravity": nil,
 	"kimi":        nil,
 	"xai":         nil,
+	"zai":         nil,
 }
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
@@ -547,6 +548,8 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 		return extractCodexConfig(body)
 	case "kimi":
 		return extractKimiConfig(body)
+	case "zai":
+		return extractZaiConfig(body)
 	default:
 		return ThinkingConfig{}
 	}
@@ -864,5 +867,55 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
 	}
 
+	return ThinkingConfig{}
+}
+
+// extractZaiConfig extracts thinking configuration from ZAI format request body.
+//
+// ZAI API format:
+//   - thinking.type: "enabled" or "disabled"
+//   - enable_thinking: boolean
+//   - reasoning_effort: string
+//   - chat_template_kwargs.enable_thinking: boolean
+func extractZaiConfig(body []byte) ThinkingConfig {
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
+	if thinkingType == "disabled" {
+		return ThinkingConfig{Mode: ModeNone, Budget: 0}
+	}
+	if enableThinking := gjson.GetBytes(body, "enable_thinking"); enableThinking.Exists() && !enableThinking.Bool() {
+		return ThinkingConfig{Mode: ModeNone, Budget: 0}
+	}
+	if chatTemplateEnable := gjson.GetBytes(body, "chat_template_kwargs.enable_thinking"); chatTemplateEnable.Exists() && !chatTemplateEnable.Bool() {
+		return ThinkingConfig{Mode: ModeNone, Budget: 0}
+	}
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+		val := strings.ToLower(strings.TrimSpace(effort.String()))
+		if val == "none" || val == "off" {
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
+		if val != "" {
+			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(val)}
+		}
+	}
+	if budget := gjson.GetBytes(body, "thinking.budget_tokens"); budget.Exists() {
+		val := int(budget.Int())
+		switch val {
+		case 0:
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case -1:
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{Mode: ModeBudget, Budget: val}
+		}
+	}
+	if thinkingType == "enabled" {
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	}
+	if enableThinking := gjson.GetBytes(body, "enable_thinking"); enableThinking.Exists() && enableThinking.Bool() {
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	}
+	if chatTemplateEnable := gjson.GetBytes(body, "chat_template_kwargs.enable_thinking"); chatTemplateEnable.Exists() && chatTemplateEnable.Bool() {
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	}
 	return ThinkingConfig{}
 }

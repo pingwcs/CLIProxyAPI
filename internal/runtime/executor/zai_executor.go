@@ -145,6 +145,13 @@ func (e *ZAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		return resp, fmt.Errorf("zai executor: failed to set stream in payload: %w", err)
 	}
 
+	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() && len(tools.Array()) > 0 {
+		body, err = sjson.SetBytes(body, "tool_stream", true)
+		if err != nil {
+			return resp, fmt.Errorf("zai executor: failed to set tool_stream in payload: %w", err)
+		}
+	}
+
 	body, err = helps.ApplyThinkingWithSourcePayload(body, req.Payload, originalPayloadSource, req.Model, from.String(), "zai", e.Identifier())
 	if err != nil {
 		return resp, err
@@ -295,6 +302,13 @@ func (e *ZAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, fmt.Errorf("zai executor: failed to set stream_options in payload: %w", err)
 	}
 
+	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() && len(tools.Array()) > 0 {
+		body, err = sjson.SetBytes(body, "tool_stream", true)
+		if err != nil {
+			return nil, fmt.Errorf("zai executor: failed to set tool_stream in payload: %w", err)
+		}
+	}
+
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
@@ -388,8 +402,9 @@ func (e *ZAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			streamUsage.ObserveOpenAIStream(line)
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param, claudeInputTokens)
+			normalizedLine := normalizeZAIStreamLine(line)
+			streamUsage.ObserveOpenAIStream(normalizedLine)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, bytes.Clone(normalizedLine), &param, claudeInputTokens)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -577,7 +592,11 @@ func normalizeZAIUpstreamModel(model string) string {
 func applyZAIHeaders(r *http.Request, token, routeModel string, stream bool) {
 	r.Header.Del("Authorization")
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Accept", "*/*")
+	if stream {
+		r.Header.Set("Accept", "text/event-stream, */*")
+	} else {
+		r.Header.Set("Accept", "*/*")
+	}
 	if r.Header.Get("User-Agent") == "" {
 		r.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
 	}
@@ -596,8 +615,19 @@ func applyZAIHeaders(r *http.Request, token, routeModel string, stream bool) {
 	r.Header.Set("X-Lang", zaiauth.XLang)
 	r.Header.Set("x_trace_id", "autoclaw-desktop")
 	r.Header.Set("X-Channel", "zai")
-	r.Header.Set("X-Session-Id", uuid.New().String())
-	r.Header.Set("X-Agent-Id", "main")
+	sessionID := r.Header.Get("X-Session-Id")
+	if sessionID == "" {
+		sessionID = uuid.New().String()
+		r.Header.Set("X-Session-Id", sessionID)
+	}
+	agentID := r.Header.Get("X-Agent-Id")
+	if agentID == "" {
+		agentID = "main"
+		r.Header.Set("X-Agent-Id", agentID)
+	}
+	if r.Header.Get("X-Session-Key") == "" {
+		r.Header.Set("X-Session-Key", fmt.Sprintf("agent:%s:%s", agentID, sessionID))
+	}
 }
 
 func getZAIUpstreamURLs(auth *cliproxyauth.Auth) []string {
@@ -669,8 +699,8 @@ func aggregateSSEToCompletion(data []byte) ([]byte, error) {
 		if chunkModel := parsed.Get("model").String(); chunkModel != "" {
 			model = chunkModel
 		}
-		if parsed.Get("usage").Exists() {
-			usageRaw = json.RawMessage(parsed.Get("usage").Raw)
+		if u := parsed.Get("usage"); u.Exists() {
+			usageRaw = normalizeZAIUsageJSON([]byte(u.Raw))
 		}
 		firstChoice := parsed.Get("choices.0")
 		if firstChoice.Exists() {
@@ -681,6 +711,10 @@ func aggregateSSEToCompletion(data []byte) ([]byte, error) {
 				}
 				if rc := delta.Get("reasoning_content"); rc.Exists() && rc.Type == gjson.String {
 					reasoning.WriteString(rc.String())
+				} else if r := delta.Get("reasoning"); r.Exists() && r.Type == gjson.String {
+					reasoning.WriteString(r.String())
+				} else if rt := delta.Get("reasoning_text"); rt.Exists() && rt.Type == gjson.String {
+					reasoning.WriteString(rt.String())
 				}
 			}
 			if fr := firstChoice.Get("finish_reason"); fr.Exists() && fr.Type == gjson.String && fr.String() != "" {
@@ -719,4 +753,58 @@ func aggregateSSEToCompletion(data []byte) ([]byte, error) {
 	}
 
 	return json.Marshal(comp)
+}
+
+func normalizeZAIUsageJSON(raw []byte) []byte {
+	if len(raw) == 0 || !gjson.ValidBytes(raw) {
+		return raw
+	}
+	parsed := gjson.ParseBytes(raw)
+	result := raw
+	if hit := parsed.Get("prompt_cache_hit_tokens"); hit.Exists() && !parsed.Get("prompt_tokens_details.cached_tokens").Exists() {
+		result, _ = sjson.SetBytes(result, "prompt_tokens_details.cached_tokens", hit.Int())
+	}
+	if write := parsed.Get("cache_write_tokens"); write.Exists() && !parsed.Get("prompt_tokens_details.cache_write_tokens").Exists() {
+		result, _ = sjson.SetBytes(result, "prompt_tokens_details.cache_write_tokens", write.Int())
+	}
+	return result
+}
+
+func normalizeZAIStreamLine(line []byte) []byte {
+	trimmed := bytes.TrimSpace(line)
+	if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		return line
+	}
+	dataPayload := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+	if len(dataPayload) == 0 || bytes.Equal(dataPayload, []byte("[DONE]")) || !gjson.ValidBytes(dataPayload) {
+		return line
+	}
+
+	parsed := gjson.ParseBytes(dataPayload)
+	modified := false
+	result := dataPayload
+
+	delta := parsed.Get("choices.0.delta")
+	if delta.Exists() && !delta.Get("reasoning_content").Exists() {
+		if r := delta.Get("reasoning"); r.Exists() && r.Type == gjson.String {
+			result, _ = sjson.SetBytes(result, "choices.0.delta.reasoning_content", r.String())
+			modified = true
+		} else if rt := delta.Get("reasoning_text"); rt.Exists() && rt.Type == gjson.String {
+			result, _ = sjson.SetBytes(result, "choices.0.delta.reasoning_content", rt.String())
+			modified = true
+		}
+	}
+
+	if u := parsed.Get("usage"); u.Exists() {
+		normalizedUsage := normalizeZAIUsageJSON([]byte(u.Raw))
+		if !bytes.Equal(normalizedUsage, []byte(u.Raw)) {
+			result, _ = sjson.SetRawBytes(result, "usage", normalizedUsage)
+			modified = true
+		}
+	}
+
+	if modified {
+		return append([]byte("data: "), result...)
+	}
+	return line
 }

@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -75,6 +76,26 @@ func TestApplyZAIHeaders(t *testing.T) {
 	}
 	if req.Header.Get("X-Session-Id") == "" {
 		t.Errorf("missing X-Session-Id")
+	}
+	if got := req.Header.Get("X-Session-Key"); got == "" || got != "agent:main:"+req.Header.Get("X-Session-Id") {
+		t.Errorf("X-Session-Key = %q, want 'agent:main:%s'", got, req.Header.Get("X-Session-Id"))
+	}
+	if got := req.Header.Get("Accept"); got != "*/*" {
+		t.Errorf("Accept for non-stream = %q, want '*/*'", got)
+	}
+
+	streamReq, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
+	applyZAIHeaders(streamReq, "test-token", "zai_auto", true)
+	if got := streamReq.Header.Get("Accept"); got != "text/event-stream, */*" {
+		t.Errorf("Accept for stream = %q, want 'text/event-stream, */*'", got)
+	}
+
+	// Preserves custom X-Session-Key if already set
+	customSessionReq, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
+	customSessionReq.Header.Set("X-Session-Key", "agent:custom:session-123")
+	applyZAIHeaders(customSessionReq, "test-token", "zai_auto", false)
+	if got := customSessionReq.Header.Get("X-Session-Key"); got != "agent:custom:session-123" {
+		t.Errorf("X-Session-Key = %q, want 'agent:custom:session-123'", got)
 	}
 	wantUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
 	if got := req.Header.Get("User-Agent"); got != wantUA {
@@ -340,5 +361,141 @@ func TestZAIExecutor_Refresh(t *testing.T) {
 	}
 	if refreshed.Metadata["access_expired"] == nil || refreshed.Metadata["access_expired"] == "" {
 		t.Errorf("expected access_expired to be set")
+	}
+}
+
+func TestZAIExecutor_Execute_ToolStream(t *testing.T) {
+	var receivedToolStream bool
+	var receivedTools gjson.Result
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		receivedToolStream = gjson.GetBytes(bodyBytes, "tool_stream").Bool()
+		receivedTools = gjson.GetBytes(bodyBytes, "tools")
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl-tool","choices":[{"index":0,"delta":{"content":"tool response"},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	exec := NewZAIExecutor(cfg)
+
+	auth := &cliproxyauth.Auth{
+		Provider: "zai",
+		Metadata: map[string]any{
+			"access_token": "token-123",
+			"base_url":     server.URL,
+		},
+	}
+
+	// Case 1: with tools -> tool_stream: true
+	reqPayloadWithTools := []byte(`{"model":"zai_auto","messages":[{"role":"user","content":"call tool"}],"tools":[{"type":"function","function":{"name":"test"}}]}`)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", server.Client().Transport)
+	_, err := exec.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "zai_auto",
+		Payload: reqPayloadWithTools,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("Execute with tools failed: %v", err)
+	}
+	if !receivedToolStream {
+		t.Errorf("expected tool_stream=true when tools present")
+	}
+	if !receivedTools.Exists() || len(receivedTools.Array()) != 1 {
+		t.Errorf("expected tools array with 1 item")
+	}
+
+	// Case 2: without tools -> tool_stream omitted
+	reqPayloadNoTools := []byte(`{"model":"zai_auto","messages":[{"role":"user","content":"no tool"}]}`)
+	_, err = exec.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "zai_auto",
+		Payload: reqPayloadNoTools,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("Execute without tools failed: %v", err)
+	}
+	if receivedToolStream {
+		t.Errorf("expected tool_stream=false when no tools present")
+	}
+}
+
+func TestZAIExecutor_AggregateSSE_ReasoningVariants(t *testing.T) {
+	// Test fallback delta.reasoning
+	sseDataReasoning := []byte(
+		"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"reasoning thought\"},\"finish_reason\":null}]}\n\n" +
+			"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	)
+	comp, err := aggregateSSEToCompletion(sseDataReasoning)
+	if err != nil {
+		t.Fatalf("aggregateSSEToCompletion failed: %v", err)
+	}
+	if got := gjson.GetBytes(comp, "choices.0.message.reasoning_content").String(); got != "reasoning thought" {
+		t.Errorf("reasoning_content = %q, want 'reasoning thought'", got)
+	}
+
+	// Test fallback delta.reasoning_text
+	sseDataReasoningText := []byte(
+		"data: {\"id\":\"c2\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_text\":\"reasoning_text thought\"},\"finish_reason\":null}]}\n\n" +
+			"data: {\"id\":\"c2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: [DONE]\n\n",
+	)
+	comp2, err := aggregateSSEToCompletion(sseDataReasoningText)
+	if err != nil {
+		t.Fatalf("aggregateSSEToCompletion failed: %v", err)
+	}
+	if got := gjson.GetBytes(comp2, "choices.0.message.reasoning_content").String(); got != "reasoning_text thought" {
+		t.Errorf("reasoning_content = %q, want 'reasoning_text thought'", got)
+	}
+}
+
+func TestZAIExecutor_AggregateSSE_UsageNormalization(t *testing.T) {
+	sseDataUsage := []byte(
+		"data: {\"id\":\"c3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120,\"prompt_cache_hit_tokens\":35,\"cache_write_tokens\":15}}\n\n" +
+			"data: [DONE]\n\n",
+	)
+	comp, err := aggregateSSEToCompletion(sseDataUsage)
+	if err != nil {
+		t.Fatalf("aggregateSSEToCompletion failed: %v", err)
+	}
+	if got := gjson.GetBytes(comp, "usage.prompt_tokens_details.cached_tokens").Int(); got != 35 {
+		t.Errorf("usage cached_tokens = %d, want 35", got)
+	}
+	if got := gjson.GetBytes(comp, "usage.prompt_tokens_details.cache_write_tokens").Int(); got != 15 {
+		t.Errorf("usage cache_write_tokens = %d, want 15", got)
+	}
+}
+
+func TestNormalizeZAIStreamLine(t *testing.T) {
+	// 1. Line with delta.reasoning
+	line1 := []byte(`data: {"choices":[{"delta":{"reasoning":"thinking delta"}}]}`)
+	norm1 := normalizeZAIStreamLine(line1)
+	if got := gjson.GetBytes(bytes.TrimPrefix(norm1, []byte("data: ")), "choices.0.delta.reasoning_content").String(); got != "thinking delta" {
+		t.Errorf("normalized reasoning_content = %q, want 'thinking delta'", got)
+	}
+
+	// 2. Line with delta.reasoning_text
+	line2 := []byte(`data: {"choices":[{"delta":{"reasoning_text":"text delta"}}]}`)
+	norm2 := normalizeZAIStreamLine(line2)
+	if got := gjson.GetBytes(bytes.TrimPrefix(norm2, []byte("data: ")), "choices.0.delta.reasoning_content").String(); got != "text delta" {
+		t.Errorf("normalized reasoning_content = %q, want 'text delta'", got)
+	}
+
+	// 3. Line with usage prompt_cache_hit_tokens
+	line3 := []byte(`data: {"choices":[],"usage":{"prompt_tokens":50,"prompt_cache_hit_tokens":20}}`)
+	norm3 := normalizeZAIStreamLine(line3)
+	if got := gjson.GetBytes(bytes.TrimPrefix(norm3, []byte("data: ")), "usage.prompt_tokens_details.cached_tokens").Int(); got != 20 {
+		t.Errorf("normalized cached_tokens = %d, want 20", got)
+	}
+
+	// 4. Non-JSON / [DONE] line unchanged
+	doneLine := []byte(`data: [DONE]`)
+	if !bytes.Equal(normalizeZAIStreamLine(doneLine), doneLine) {
+		t.Errorf("expected [DONE] line to be unchanged")
 	}
 }

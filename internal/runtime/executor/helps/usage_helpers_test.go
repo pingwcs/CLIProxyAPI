@@ -137,6 +137,17 @@ func TestParseOpenAIUsageNormalizesCacheCreationAlias(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIUsagePromptCacheHitTokensAndCacheWriteTokens(t *testing.T) {
+	data := []byte(`{"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_cache_hit_tokens":30,"cache_write_tokens":10}}`)
+	detail := ParseOpenAIUsage(data)
+	if detail.CachedTokens != 30 || detail.CacheReadTokens != 30 {
+		t.Fatalf("cached tokens = %d (read: %d), want 30", detail.CachedTokens, detail.CacheReadTokens)
+	}
+	if detail.CacheCreationTokens != 10 {
+		t.Fatalf("cache creation tokens = %d, want 10", detail.CacheCreationTokens)
+	}
+}
+
 func TestParseOpenAIUsageIgnoresNullUsage(t *testing.T) {
 	data := []byte(`{"usage":null}`)
 	detail := ParseOpenAIUsage(data)
