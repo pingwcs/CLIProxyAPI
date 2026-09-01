@@ -48,7 +48,7 @@ func TestApplyZAIHeaders(t *testing.T) {
 	}
 	req.Header.Set("Authorization", "Bearer legacy-token")
 
-	applyZAIHeaders(req, "test-token", "zai_auto", false)
+	applyZAIHeaders(req, "test-token", "zai_auto")
 
 	if req.Header.Get("Authorization") != "" {
 		t.Errorf("expected Authorization header to be absent, got %q", req.Header.Get("Authorization"))
@@ -74,38 +74,35 @@ func TestApplyZAIHeaders(t *testing.T) {
 	if req.Header.Get("X-Request-Id") == "" {
 		t.Errorf("missing X-Request-Id")
 	}
-	if req.Header.Get("X-Session-Id") == "" {
-		t.Errorf("missing X-Session-Id")
+	if req.Header.Get("X-Session-Id") != "" {
+		t.Errorf("expected X-Session-Id to be absent, got %q", req.Header.Get("X-Session-Id"))
 	}
-	if got := req.Header.Get("X-Session-Key"); got == "" || got != "agent:main:"+req.Header.Get("X-Session-Id") {
-		t.Errorf("X-Session-Key = %q, want 'agent:main:%s'", got, req.Header.Get("X-Session-Id"))
+	if req.Header.Get("X-Session-Key") != "" {
+		t.Errorf("expected X-Session-Key to be absent, got %q", req.Header.Get("X-Session-Key"))
 	}
 	if got := req.Header.Get("Accept"); got != "*/*" {
-		t.Errorf("Accept for non-stream = %q, want '*/*'", got)
+		t.Errorf("Accept = %q, want '*/*'", got)
 	}
-
-	streamReq, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	applyZAIHeaders(streamReq, "test-token", "zai_auto", true)
-	if got := streamReq.Header.Get("Accept"); got != "text/event-stream, */*" {
-		t.Errorf("Accept for stream = %q, want 'text/event-stream, */*'", got)
+	if got := req.Header.Get("Accept-Language"); got != "*" {
+		t.Errorf("Accept-Language = %q, want '*'", got)
 	}
-
-	// Preserves custom X-Session-Key if already set
-	customSessionReq, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
-	customSessionReq.Header.Set("X-Session-Key", "agent:custom:session-123")
-	applyZAIHeaders(customSessionReq, "test-token", "zai_auto", false)
-	if got := customSessionReq.Header.Get("X-Session-Key"); got != "agent:custom:session-123" {
-		t.Errorf("X-Session-Key = %q, want 'agent:custom:session-123'", got)
+	if got := req.Header.Get("Sec-Fetch-Mode"); got != "cors" {
+		t.Errorf("Sec-Fetch-Mode = %q, want 'cors'", got)
 	}
-	wantUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
-	if got := req.Header.Get("User-Agent"); got != wantUA {
-		t.Errorf("User-Agent = %q, want %q", got, wantUA)
+	if got := req.Header.Get("Accept-Encoding"); got != "gzip, deflate" {
+		t.Errorf("Accept-Encoding = %q, want 'gzip, deflate'", got)
+	}
+	if got := req.Header["x_trace_id"]; len(got) != 1 || got[0] != "autoclaw-desktop" {
+		t.Errorf("x_trace_id map lookup = %v, want ['autoclaw-desktop']", got)
+	}
+	if got := req.Header.Get("User-Agent"); got != "node" {
+		t.Errorf("User-Agent = %q, want 'node'", got)
 	}
 
 	// Preserves custom User-Agent if already set
 	customReq, _ := http.NewRequest(http.MethodPost, "https://example.com", nil)
 	customReq.Header.Set("User-Agent", "CustomAgent/1.0")
-	applyZAIHeaders(customReq, "test-token", "zai_auto", false)
+	applyZAIHeaders(customReq, "test-token", "zai_auto")
 	if got := customReq.Header.Get("User-Agent"); got != "CustomAgent/1.0" {
 		t.Errorf("User-Agent = %q, want 'CustomAgent/1.0'", got)
 	}

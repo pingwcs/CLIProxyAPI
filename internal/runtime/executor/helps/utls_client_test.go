@@ -2,6 +2,9 @@ package helps
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/md5"
 	"encoding/binary"
@@ -495,6 +498,148 @@ func TestNewZAIHTTPClientUsesContextRoundTripper(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected context RoundTripper to handle zai request")
+	}
+}
+
+func TestZAIRequestWireSpec(t *testing.T) {
+	t.Parallel()
+
+	spec := zaiRequestWireSpec()
+	if spec.Order == nil || spec.Casing == nil || spec.Inject == nil {
+		t.Fatal("zaiRequestWireSpec returned incomplete spec")
+	}
+
+	desired := spec.Order("POST", "/autoclaw-proxy/proxy/autoclaw/chat/completions")
+	wantOrder := zaiHeaderOrderList
+	if !reflect.DeepEqual(desired, wantOrder) {
+		t.Errorf("order = %v, want %v", desired, wantOrder)
+	}
+
+	lowercaseHeaders := []string{
+		"host", "connection", "accept-language", "sec-fetch-mode",
+		"user-agent", "accept-encoding", "content-length",
+	}
+	for _, h := range lowercaseHeaders {
+		if got := spec.Casing(h); got != strings.ToLower(h) {
+			t.Errorf("casing(%q) = %q, want %q", h, got, strings.ToLower(h))
+		}
+		if got := spec.Casing(strings.ToUpper(h)); got != strings.ToLower(h) {
+			t.Errorf("casing(%q) = %q, want %q", strings.ToUpper(h), got, strings.ToLower(h))
+		}
+	}
+	if got := spec.Casing("X-Request-Id"); got != "" {
+		t.Errorf("casing(X-Request-Id) = %q, want empty (keep original)", got)
+	}
+
+	injected := spec.Inject("POST", "/")
+	if len(injected) != 1 || injected[0][0] != "connection" || injected[0][1] != "keep-alive" {
+		t.Errorf("inject = %v, want [['connection', 'keep-alive']]", injected)
+	}
+}
+
+func TestZAIDecompressRoundTripper(t *testing.T) {
+	t.Parallel()
+
+	// 1. Gzip decompression
+	var gzBuf bytes.Buffer
+	gzWriter := gzip.NewWriter(&gzBuf)
+	_, _ = gzWriter.Write([]byte("hello gzip world"))
+	_ = gzWriter.Close()
+
+	rtGz := &zaiDecompressRoundTripper{
+		transport: utlsClientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    200,
+				Header:        http.Header{"Content-Encoding": []string{"gzip"}, "Content-Length": []string{"100"}},
+				Body:          io.NopCloser(bytes.NewReader(gzBuf.Bytes())),
+				ContentLength: 100,
+			}, nil
+		}),
+	}
+	respGz, err := rtGz.RoundTrip(&http.Request{})
+	if err != nil {
+		t.Fatalf("gzip RoundTrip error: %v", err)
+	}
+	defer func() { _ = respGz.Body.Close() }()
+	bodyGz, _ := io.ReadAll(respGz.Body)
+	if string(bodyGz) != "hello gzip world" {
+		t.Errorf("gzip body = %q, want 'hello gzip world'", string(bodyGz))
+	}
+	if respGz.Header.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding header not removed")
+	}
+
+	// 2. Deflate (zlib) decompression
+	var zlibBuf bytes.Buffer
+	zlibWriter := zlib.NewWriter(&zlibBuf)
+	_, _ = zlibWriter.Write([]byte("hello zlib world"))
+	_ = zlibWriter.Close()
+
+	rtZlib := &zaiDecompressRoundTripper{
+		transport: utlsClientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    200,
+				Header:        http.Header{"Content-Encoding": []string{"deflate"}},
+				Body:          io.NopCloser(bytes.NewReader(zlibBuf.Bytes())),
+				ContentLength: 100,
+			}, nil
+		}),
+	}
+	respZlib, err := rtZlib.RoundTrip(&http.Request{})
+	if err != nil {
+		t.Fatalf("zlib RoundTrip error: %v", err)
+	}
+	defer func() { _ = respZlib.Body.Close() }()
+	bodyZlib, _ := io.ReadAll(respZlib.Body)
+	if string(bodyZlib) != "hello zlib world" {
+		t.Errorf("zlib body = %q, want 'hello zlib world'", string(bodyZlib))
+	}
+
+	// 3. Raw deflate decompression
+	var rawDeflateBuf bytes.Buffer
+	flateWriter, _ := flate.NewWriter(&rawDeflateBuf, flate.DefaultCompression)
+	_, _ = flateWriter.Write([]byte("hello raw deflate world"))
+	_ = flateWriter.Close()
+
+	rtRaw := &zaiDecompressRoundTripper{
+		transport: utlsClientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    200,
+				Header:        http.Header{"Content-Encoding": []string{"deflate"}},
+				Body:          io.NopCloser(bytes.NewReader(rawDeflateBuf.Bytes())),
+				ContentLength: 100,
+			}, nil
+		}),
+	}
+	respRaw, err := rtRaw.RoundTrip(&http.Request{})
+	if err != nil {
+		t.Fatalf("raw deflate RoundTrip error: %v", err)
+	}
+	defer func() { _ = respRaw.Body.Close() }()
+	bodyRaw, _ := io.ReadAll(respRaw.Body)
+	if string(bodyRaw) != "hello raw deflate world" {
+		t.Errorf("raw deflate body = %q, want 'hello raw deflate world'", string(bodyRaw))
+	}
+
+	// 4. Uncompressed passthrough
+	rtPlain := &zaiDecompressRoundTripper{
+		transport: utlsClientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    200,
+				Header:        http.Header{"Content-Type": []string{"text/plain"}},
+				Body:          io.NopCloser(bytes.NewReader([]byte("plain text"))),
+				ContentLength: 10,
+			}, nil
+		}),
+	}
+	respPlain, err := rtPlain.RoundTrip(&http.Request{})
+	if err != nil {
+		t.Fatalf("plain RoundTrip error: %v", err)
+	}
+	defer func() { _ = respPlain.Body.Close() }()
+	bodyPlain, _ := io.ReadAll(respPlain.Body)
+	if string(bodyPlain) != "plain text" {
+		t.Errorf("plain body = %q, want 'plain text'", string(bodyPlain))
 	}
 }
 

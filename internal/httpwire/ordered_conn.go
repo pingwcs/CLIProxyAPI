@@ -18,18 +18,34 @@ const maxBufferedRequestHeader = 1 << 20
 // returned list retain their original relative order after the listed headers.
 type RequestHeaderOrder func(method, requestTarget string) []string
 
+// RequestWireSpec describes a full HTTP/1.1 request-head wire transformation.
+type RequestWireSpec struct {
+	Order  RequestHeaderOrder                             // desired order (case-insensitive names)
+	Casing func(canonicalName string) string              // canonical name -> exact wire casing; "" keeps original
+	Inject func(method, requestTarget string) [][2]string // fixed headers appended if absent (name, value)
+}
+
 // NewOrderedRequestConn wraps conn and rewrites only HTTP/1.1 request-header
 // order. Request lines, header casing and values, and body bytes remain intact.
 func NewOrderedRequestConn(conn net.Conn, order RequestHeaderOrder) net.Conn {
 	if conn == nil || order == nil {
 		return conn
 	}
-	return &orderedRequestConn{Conn: conn, order: order}
+	return NewWireSpecRequestConn(conn, RequestWireSpec{Order: order})
+}
+
+// NewWireSpecRequestConn wraps conn and applies a RequestWireSpec (header
+// casing rewrite, missing fixed-header injection, and header ordering).
+func NewWireSpecRequestConn(conn net.Conn, spec RequestWireSpec) net.Conn {
+	if conn == nil {
+		return nil
+	}
+	return &orderedRequestConn{Conn: conn, spec: spec}
 }
 
 type orderedRequestConn struct {
 	net.Conn
-	order RequestHeaderOrder
+	spec RequestWireSpec
 
 	mu            sync.Mutex
 	header        []byte
@@ -94,7 +110,7 @@ func (c *orderedRequestConn) Write(p []byte) (int, error) {
 		c.header = nil
 		currentHeaderBytes := min(len(remaining), max(0, headerEnd-previousHeaderLength))
 
-		ordered, contentLength, chunked := orderRequestHeader(header, c.order)
+		ordered, contentLength, chunked := transformRequestHeader(header, c.spec)
 		if _, errWrite := writeAll(c.Conn, ordered); errWrite != nil {
 			// All caller bytes were accepted into the wrapper before the transformed
 			// header write failed. Return the full input count with the terminal
@@ -113,6 +129,10 @@ func (c *orderedRequestConn) Write(p []byte) (int, error) {
 }
 
 func orderRequestHeader(header []byte, order RequestHeaderOrder) ([]byte, int64, bool) {
+	return transformRequestHeader(header, RequestWireSpec{Order: order})
+}
+
+func transformRequestHeader(header []byte, spec RequestWireSpec) ([]byte, int64, bool) {
 	lines := bytes.Split(header[:len(header)-len("\r\n\r\n")], []byte("\r\n"))
 	if len(lines) == 0 {
 		return header, 0, false
@@ -122,27 +142,82 @@ func orderRequestHeader(header []byte, order RequestHeaderOrder) ([]byte, int64,
 		return header, requestContentLength(lines[1:]), requestUsesChunkedEncoding(lines[1:])
 	}
 
-	desired := order(requestParts[0], requestParts[1])
-	if len(desired) == 0 {
-		return header, requestContentLength(lines[1:]), requestUsesChunkedEncoding(lines[1:])
+	method, target := requestParts[0], requestParts[1]
+	headerLines := lines[1:]
+
+	// 1. Rewrite header name casing if Casing func is provided.
+	if spec.Casing != nil {
+		rewrittenLines := make([][]byte, len(headerLines))
+		for index, line := range headerLines {
+			colon := bytes.IndexByte(line, ':')
+			if colon > 0 {
+				canonicalName := strings.TrimSpace(string(line[:colon]))
+				if wireCasing := spec.Casing(canonicalName); wireCasing != "" {
+					var newLine bytes.Buffer
+					newLine.WriteString(wireCasing)
+					newLine.Write(line[colon:])
+					rewrittenLines[index] = newLine.Bytes()
+					continue
+				}
+			}
+			rewrittenLines[index] = line
+		}
+		headerLines = rewrittenLines
 	}
 
-	headerLines := lines[1:]
-	used := make([]bool, len(headerLines))
-	orderedLines := make([][]byte, 0, len(lines))
-	orderedLines = append(orderedLines, lines[0])
-	for _, name := range desired {
-		for index, line := range headerLines {
-			if used[index] || !headerLineNamed(line, name) {
-				continue
+	// 2. Inject missing headers if Inject func is provided.
+	if spec.Inject != nil {
+		injected := spec.Inject(method, target)
+		for _, pair := range injected {
+			name, val := pair[0], pair[1]
+			hasHeader := false
+			for _, line := range headerLines {
+				if headerLineNamed(line, name) {
+					hasHeader = true
+					break
+				}
 			}
-			orderedLines = append(orderedLines, line)
-			used[index] = true
+			if !hasHeader {
+				wireName := name
+				if spec.Casing != nil {
+					if c := spec.Casing(name); c != "" {
+						wireName = c
+					}
+				}
+				newLine := []byte(fmt.Sprintf("%s: %s", wireName, val))
+				headerLines = append(headerLines, newLine)
+			}
 		}
 	}
-	for index, line := range headerLines {
-		if !used[index] {
-			orderedLines = append(orderedLines, line)
+
+	// 3. Order headers if Order is provided.
+	var desired []string
+	if spec.Order != nil {
+		desired = spec.Order(method, target)
+	}
+
+	var orderedLines [][]byte
+	if len(desired) == 0 {
+		orderedLines = make([][]byte, 0, len(headerLines)+1)
+		orderedLines = append(orderedLines, lines[0])
+		orderedLines = append(orderedLines, headerLines...)
+	} else {
+		used := make([]bool, len(headerLines))
+		orderedLines = make([][]byte, 0, len(headerLines)+1)
+		orderedLines = append(orderedLines, lines[0])
+		for _, name := range desired {
+			for index, line := range headerLines {
+				if used[index] || !headerLineNamed(line, name) {
+					continue
+				}
+				orderedLines = append(orderedLines, line)
+				used[index] = true
+			}
+		}
+		for index, line := range headerLines {
+			if !used[index] {
+				orderedLines = append(orderedLines, line)
+			}
 		}
 	}
 

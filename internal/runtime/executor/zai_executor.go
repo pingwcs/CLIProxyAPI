@@ -87,7 +87,7 @@ func (e *ZAIExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth)
 	if auth != nil && auth.Attributes != nil {
 		routeModel = auth.Attributes["model"]
 	}
-	applyZAIHeaders(req, token, routeModel, false)
+	applyZAIHeaders(req, token, routeModel)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -171,7 +171,7 @@ func (e *ZAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		if errReq != nil {
 			return resp, fmt.Errorf("zai executor: failed to create HTTP request: %w", errReq)
 		}
-		applyZAIHeaders(httpReq, token, routeModel, false)
+		applyZAIHeaders(httpReq, token, routeModel)
 		var attrs map[string]string
 		if auth != nil {
 			attrs = auth.Attributes
@@ -323,7 +323,7 @@ func (e *ZAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		if errReq != nil {
 			return nil, fmt.Errorf("zai executor: failed to create HTTP request: %w", errReq)
 		}
-		applyZAIHeaders(httpReq, token, routeModel, true)
+		applyZAIHeaders(httpReq, token, routeModel)
 		var attrs map[string]string
 		if auth != nil {
 			attrs = auth.Attributes
@@ -589,17 +589,10 @@ func normalizeZAIUpstreamModel(model string) string {
 	return zaiRoutePrefixPattern.ReplaceAllString(model, "")
 }
 
-func applyZAIHeaders(r *http.Request, token, routeModel string, stream bool) {
+func applyZAIHeaders(r *http.Request, token, routeModel string) {
 	r.Header.Del("Authorization")
 	r.Header.Set("Content-Type", "application/json")
-	if stream {
-		r.Header.Set("Accept", "text/event-stream, */*")
-	} else {
-		r.Header.Set("Accept", "*/*")
-	}
-	if r.Header.Get("User-Agent") == "" {
-		r.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
-	}
+	r.Header.Set("Accept", "*/*")
 	if token != "" {
 		r.Header.Set("X-Authorization", "Bearer "+token)
 	}
@@ -613,20 +606,13 @@ func applyZAIHeaders(r *http.Request, token, routeModel string, stream bool) {
 	r.Header.Set("X-Tm", "win")
 	r.Header.Set("X-Version", zaiauth.XVersion)
 	r.Header.Set("X-Lang", zaiauth.XLang)
-	r.Header.Set("x_trace_id", "autoclaw-desktop")
+	r.Header["x_trace_id"] = []string{"autoclaw-desktop"}
 	r.Header.Set("X-Channel", "zai")
-	sessionID := r.Header.Get("X-Session-Id")
-	if sessionID == "" {
-		sessionID = uuid.New().String()
-		r.Header.Set("X-Session-Id", sessionID)
-	}
-	agentID := r.Header.Get("X-Agent-Id")
-	if agentID == "" {
-		agentID = "main"
-		r.Header.Set("X-Agent-Id", agentID)
-	}
-	if r.Header.Get("X-Session-Key") == "" {
-		r.Header.Set("X-Session-Key", fmt.Sprintf("agent:%s:%s", agentID, sessionID))
+	r.Header.Set("Accept-Language", "*")
+	r.Header.Set("Sec-Fetch-Mode", "cors")
+	r.Header.Set("Accept-Encoding", "gzip, deflate")
+	if r.Header.Get("User-Agent") == "" {
+		r.Header.Set("User-Agent", "node")
 	}
 }
 

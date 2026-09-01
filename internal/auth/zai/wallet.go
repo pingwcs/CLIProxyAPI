@@ -78,6 +78,11 @@ func FetchWalletBalance(ctx context.Context, httpClient *http.Client, host, acce
 	traceID := newRandomUUID()
 
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "*")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("User-Agent", "node")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	req.Header.Set("X-Auth-Appid", AppID)
 	req.Header.Set("X-Auth-TimeStamp", ts)
 	req.Header.Set("X-Auth-Sign", sign)
@@ -87,7 +92,6 @@ func FetchWalletBalance(ctx context.Context, httpClient *http.Client, host, acce
 	req.Header.Set("X-Channel", "zai")
 	req.Header.Set("X-Lang", XLang)
 	req.Header.Set("X-Trace-Id", traceID)
-	req.Header.Set("Accept", "*/*")
 
 	client := httpClient
 	if client == nil {

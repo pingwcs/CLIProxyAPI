@@ -1,6 +1,10 @@
 package helps
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"fmt"
@@ -406,10 +410,198 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 	return client
 }
 
-// NewZAIHTTPClient creates an HTTP client that always uses the Chrome uTLS
-// fingerprint transport. The AutoClaw (z.ai) upstream sits behind an Aliyun
-// WAF that blocks the default Go TLS fingerprint, so every zai request must
-// dial with a browser-like ClientHello.
+var zaiHeaderOrderList = []string{
+	"host",
+	"connection",
+	"Content-Type",
+	"Accept",
+	"X-Authorization",
+	"X-Request-Id",
+	"X-Request-Model",
+	"X-Client-Type",
+	"X-Product",
+	"X-Harness-Type",
+	"X-Tm",
+	"X-Version",
+	"X-Lang",
+	"x_trace_id",
+	"X-Channel",
+	"Accept-Language",
+	"Sec-Fetch-Mode",
+	"User-Agent",
+	"Accept-Encoding",
+	"Content-Length",
+}
+
+func zaiRequestWireSpec() httpwire.RequestWireSpec {
+	return httpwire.RequestWireSpec{
+		Order: func(_, _ string) []string {
+			return zaiHeaderOrderList
+		},
+		Casing: func(canonicalName string) string {
+			switch strings.ToLower(canonicalName) {
+			case "host":
+				return "host"
+			case "connection":
+				return "connection"
+			case "accept-language":
+				return "accept-language"
+			case "sec-fetch-mode":
+				return "sec-fetch-mode"
+			case "user-agent":
+				return "user-agent"
+			case "accept-encoding":
+				return "accept-encoding"
+			case "content-length":
+				return "content-length"
+			default:
+				return ""
+			}
+		},
+		Inject: func(_, _ string) [][2]string {
+			return [][2]string{
+				{"connection", "keep-alive"},
+			}
+		},
+	}
+}
+
+func newZAIRoundTripper(proxyURL string) http.RoundTripper {
+	var dialer proxy.Dialer = proxy.Direct
+	if proxyURL != "" {
+		proxyDialer, mode, errBuild := proxyutil.BuildDialer(proxyURL)
+		if errBuild != nil {
+			log.Errorf("zai tls: failed to configure proxy dialer for %q: %v", proxyutil.Redact(proxyURL), errBuild)
+		} else if mode != proxyutil.ModeInherit && proxyDialer != nil {
+			dialer = proxyDialer
+		}
+	}
+
+	transport := &http.Transport{
+		ForceAttemptHTTP2: false,
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			var (
+				conn net.Conn
+				err  error
+			)
+			if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+				conn, err = contextDialer.DialContext(ctx, network, addr)
+			} else {
+				conn, err = dialer.Dial(network, addr)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("zai tls: dial upstream: %w", err)
+			}
+
+			host, _, errSplit := net.SplitHostPort(addr)
+			if errSplit != nil {
+				if errClose := conn.Close(); errClose != nil {
+					log.Debugf("zai tls: close failed connection: %v", errClose)
+				}
+				return nil, fmt.Errorf("zai tls: split upstream address: %w", errSplit)
+			}
+			// Reuses the Node/OpenSSL ClientHello spec captured from Node to mirror
+			// the AutoClaw Electron/undici HTTP/1.1 TLS fingerprint (without session cache).
+			tlsConn := tls.UClient(conn, &tls.Config{ServerName: host}, tls.HelloCustom)
+			if errPreset := tlsConn.ApplyPreset(claudeCodeTLSClientHelloSpec()); errPreset != nil {
+				if errClose := tlsConn.Close(); errClose != nil {
+					log.Debugf("zai tls: close connection after preset failure: %v", errClose)
+				}
+				return nil, fmt.Errorf("zai tls: apply Node/undici ClientHello: %w", errPreset)
+			}
+			if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
+				if errClose := tlsConn.Close(); errClose != nil {
+					log.Debugf("zai tls: close connection after handshake failure: %v", errClose)
+				}
+				return nil, fmt.Errorf("zai tls: handshake upstream: %w", errHandshake)
+			}
+			return httpwire.NewWireSpecRequestConn(tlsConn, zaiRequestWireSpec()), nil
+		},
+	}
+	return &zaiDecompressRoundTripper{transport: transport}
+}
+
+type zaiDecompressRoundTripper struct {
+	transport http.RoundTripper
+}
+
+func (rt *zaiDecompressRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.transport.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil {
+		return resp, err
+	}
+
+	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+	switch encoding {
+	case "gzip":
+		gzReader, errGz := gzip.NewReader(resp.Body)
+		if errGz != nil {
+			return resp, nil
+		}
+		resp.Body = &decompressReadCloser{
+			reader: gzReader,
+			closer: resp.Body,
+		}
+		resp.Header.Del("Content-Encoding")
+		resp.Header.Del("Content-Length")
+		resp.ContentLength = -1
+		resp.Uncompressed = true
+	case "deflate":
+		// Read a small 2-byte peek to distinguish zlib header from raw deflate without breaking streaming.
+		head := make([]byte, 2)
+		n, errReadHead := io.ReadFull(resp.Body, head)
+		if errReadHead != nil && !errors.Is(errReadHead, io.EOF) && !errors.Is(errReadHead, io.ErrUnexpectedEOF) {
+			return resp, nil
+		}
+		prefix := head[:n]
+		comboReader := io.MultiReader(bytes.NewReader(prefix), resp.Body)
+
+		zReader, errZlib := zlib.NewReader(comboReader)
+		if errZlib == nil {
+			resp.Body = &decompressReadCloser{
+				reader: zReader,
+				closer: resp.Body,
+			}
+		} else {
+			// Fall back to raw deflate reader wrapping prefix + remaining body
+			rawCombo := io.MultiReader(bytes.NewReader(prefix), resp.Body)
+			fReader := flate.NewReader(rawCombo)
+			resp.Body = &decompressReadCloser{
+				reader: fReader,
+				closer: resp.Body,
+			}
+		}
+		resp.Header.Del("Content-Encoding")
+		resp.Header.Del("Content-Length")
+		resp.ContentLength = -1
+		resp.Uncompressed = true
+	}
+	return resp, nil
+}
+
+type decompressReadCloser struct {
+	reader io.Reader
+	closer io.Closer
+}
+
+func (d *decompressReadCloser) Read(p []byte) (int, error) {
+	return d.reader.Read(p)
+}
+
+func (d *decompressReadCloser) Close() error {
+	var errReader error
+	if c, ok := d.reader.(io.Closer); ok {
+		errReader = c.Close()
+	}
+	errCloser := d.closer.Close()
+	if errReader != nil {
+		return errReader
+	}
+	return errCloser
+}
+
+// NewZAIHTTPClient creates an HTTP client that uses the Node/undici TLS and
+// HTTP/1.1 wire fingerprint matching AutoClaw desktop client.
 // timeout follows the caller's usual semantics; 0 means no client-level timeout.
 func NewZAIHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	var proxyURL string
@@ -425,7 +617,7 @@ func NewZAIHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyaut
 		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
 	}
 
-	var rt http.RoundTripper = newUtlsRoundTripper(proxyURL)
+	var rt http.RoundTripper = newZAIRoundTripper(proxyURL)
 	if proxyURL == "" && ctxRoundTripper != nil {
 		rt = ctxRoundTripper
 	}

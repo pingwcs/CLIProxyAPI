@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -196,5 +197,108 @@ func TestOrderedRequestConnTracksOnlyWrittenChunkBytesAfterPartialError(t *testi
 		"GET /next HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: identity\r\n\r\n"
 	if got := underlying.String(); got != want {
 		t.Fatalf("wire bytes differ after chunk retry\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestWireSpecRequestConnCasingAndInject(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	spec := RequestWireSpec{
+		Order: func(_, _ string) []string {
+			return []string{"host", "connection", "Content-Type", "user-agent", "x-custom"}
+		},
+		Casing: func(canonicalName string) string {
+			lowered := strings.ToLower(canonicalName)
+			if lowered == "host" || lowered == "connection" || lowered == "user-agent" {
+				return lowered
+			}
+			return "" // keep original
+		},
+		Inject: func(_, _ string) [][2]string {
+			return [][2]string{
+				{"connection", "keep-alive"},
+			}
+		},
+	}
+
+	conn := NewWireSpecRequestConn(client, spec)
+
+	input := "POST /test HTTP/1.1\r\nHost: example.com\r\nUser-Agent: test-agent\r\nContent-Type: application/json\r\nX-Custom: value\r\n\r\n"
+	want := "POST /test HTTP/1.1\r\nhost: example.com\r\nconnection: keep-alive\r\nContent-Type: application/json\r\nuser-agent: test-agent\r\nX-Custom: value\r\n\r\n"
+
+	readDone := make(chan []byte, 1)
+	go func() {
+		got := make([]byte, len(want))
+		_, _ = io.ReadFull(server, got)
+		readDone <- got
+	}()
+
+	if _, err := conn.Write([]byte(input)); err != nil {
+		t.Fatalf("conn write error: %v", err)
+	}
+
+	select {
+	case got := <-readDone:
+		if !bytes.Equal(got, []byte(want)) {
+			t.Fatalf("wire bytes differ\n got: %q\nwant: %q", string(got), want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for read")
+	}
+}
+
+func TestWireSpecRequestConnInjectDoesNotDuplicate(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	spec := RequestWireSpec{
+		Order: func(_, _ string) []string {
+			return []string{"host", "connection"}
+		},
+		Casing: func(canonicalName string) string {
+			return strings.ToLower(canonicalName)
+		},
+		Inject: func(_, _ string) [][2]string {
+			return [][2]string{
+				{"connection", "keep-alive"},
+			}
+		},
+	}
+
+	conn := NewWireSpecRequestConn(client, spec)
+
+	// Connection is already present, casing should be normalized to lowercase, and inject should NOT duplicate it
+	input := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+	want := "GET / HTTP/1.1\r\nhost: example.com\r\nconnection: close\r\n\r\n"
+
+	readDone := make(chan []byte, 1)
+	go func() {
+		got := make([]byte, len(want))
+		_, _ = io.ReadFull(server, got)
+		readDone <- got
+	}()
+
+	if _, err := conn.Write([]byte(input)); err != nil {
+		t.Fatalf("conn write error: %v", err)
+	}
+
+	select {
+	case got := <-readDone:
+		if !bytes.Equal(got, []byte(want)) {
+			t.Fatalf("wire bytes differ\n got: %q\nwant: %q", string(got), want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for read")
 	}
 }

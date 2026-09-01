@@ -150,6 +150,10 @@ func doRefreshRequest(ctx context.Context, client *http.Client, targetURL, devic
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "*")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("User-Agent", "node")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	req.Header.Set("X-Version", XVersion)
 	req.Header.Set("X-Tm", "win")
 	req.Header.Set("X-Product", "autoclaw")
