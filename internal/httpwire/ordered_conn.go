@@ -40,6 +40,9 @@ func NewWireSpecRequestConn(conn net.Conn, spec RequestWireSpec) net.Conn {
 	if conn == nil {
 		return nil
 	}
+	if spec.Order == nil && spec.Casing == nil && spec.Inject == nil {
+		return conn
+	}
 	return &orderedRequestConn{Conn: conn, spec: spec}
 }
 

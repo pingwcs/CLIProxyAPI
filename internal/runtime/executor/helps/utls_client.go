@@ -1,10 +1,6 @@
 package helps
 
 import (
-	"bytes"
-	"compress/flate"
-	"compress/gzip"
-	"compress/zlib"
 	"context"
 	"errors"
 	"fmt"
@@ -530,74 +526,8 @@ func (rt *zaiDecompressRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	if err != nil || resp == nil || resp.Body == nil {
 		return resp, err
 	}
-
-	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
-	switch encoding {
-	case "gzip":
-		gzReader, errGz := gzip.NewReader(resp.Body)
-		if errGz != nil {
-			return resp, nil
-		}
-		resp.Body = &decompressReadCloser{
-			reader: gzReader,
-			closer: resp.Body,
-		}
-		resp.Header.Del("Content-Encoding")
-		resp.Header.Del("Content-Length")
-		resp.ContentLength = -1
-		resp.Uncompressed = true
-	case "deflate":
-		// Read a small 2-byte peek to distinguish zlib header from raw deflate without breaking streaming.
-		head := make([]byte, 2)
-		n, errReadHead := io.ReadFull(resp.Body, head)
-		if errReadHead != nil && !errors.Is(errReadHead, io.EOF) && !errors.Is(errReadHead, io.ErrUnexpectedEOF) {
-			return resp, nil
-		}
-		prefix := head[:n]
-		comboReader := io.MultiReader(bytes.NewReader(prefix), resp.Body)
-
-		zReader, errZlib := zlib.NewReader(comboReader)
-		if errZlib == nil {
-			resp.Body = &decompressReadCloser{
-				reader: zReader,
-				closer: resp.Body,
-			}
-		} else {
-			// Fall back to raw deflate reader wrapping prefix + remaining body
-			rawCombo := io.MultiReader(bytes.NewReader(prefix), resp.Body)
-			fReader := flate.NewReader(rawCombo)
-			resp.Body = &decompressReadCloser{
-				reader: fReader,
-				closer: resp.Body,
-			}
-		}
-		resp.Header.Del("Content-Encoding")
-		resp.Header.Del("Content-Length")
-		resp.ContentLength = -1
-		resp.Uncompressed = true
-	}
+	_ = httpwire.DecompressResponseBody(resp)
 	return resp, nil
-}
-
-type decompressReadCloser struct {
-	reader io.Reader
-	closer io.Closer
-}
-
-func (d *decompressReadCloser) Read(p []byte) (int, error) {
-	return d.reader.Read(p)
-}
-
-func (d *decompressReadCloser) Close() error {
-	var errReader error
-	if c, ok := d.reader.(io.Closer); ok {
-		errReader = c.Close()
-	}
-	errCloser := d.closer.Close()
-	if errReader != nil {
-		return errReader
-	}
-	return errCloser
 }
 
 // NewZAIHTTPClient creates an HTTP client that uses the Node/undici TLS and

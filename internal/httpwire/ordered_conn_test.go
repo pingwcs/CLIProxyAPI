@@ -302,3 +302,19 @@ func TestWireSpecRequestConnInjectDoesNotDuplicate(t *testing.T) {
 		t.Fatal("timed out waiting for read")
 	}
 }
+
+func TestWireSpecRequestConnEmptySpecFastPath(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	emptySpec := RequestWireSpec{}
+	conn := NewWireSpecRequestConn(client, emptySpec)
+	if conn != client {
+		t.Errorf("NewWireSpecRequestConn with empty spec returned %T, want original conn %T", conn, client)
+	}
+}

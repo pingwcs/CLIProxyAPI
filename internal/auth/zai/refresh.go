@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/httpwire"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -173,6 +174,8 @@ func doRefreshRequest(ctx context.Context, client *http.Client, targetURL, devic
 			log.Errorf("zai refresh: close response body error: %v", errClose)
 		}
 	}()
+
+	httpwire.DecompressResponseBody(resp)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/httpwire"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -107,6 +108,8 @@ func FetchWalletBalance(ctx context.Context, httpClient *http.Client, host, acce
 			log.Errorf("zai wallet: close response body error: %v", errClose)
 		}
 	}()
+
+	httpwire.DecompressResponseBody(resp)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
